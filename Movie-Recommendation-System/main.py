@@ -134,6 +134,8 @@ recommend('Batman')
         
 
 pickle.dump(new_dataframe, open('movies.pkl', 'wb'))
+pickle.dump(new_dataframe.to_dict(), open('movie_dict.pkl', 'wb'))
+pickle.dump(similarity, open('similarity.pkl', 'wb'))
 
 
 
