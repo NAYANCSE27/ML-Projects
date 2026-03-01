@@ -429,17 +429,22 @@ class LinearProbe(nn.Module):
 
 # For Grad-CAM we need the feature maps and gradients from the last conv layer of feature_extractor
 # Hook functions
+# we'll capture both activations and their gradients. because ``register_backward_hook``
+# is unreliable / deprecated in recent PyTorch versions we attach a hook to the
+# *output tensor* inside the forward hook. this guarantees ``gradients`` is filled
+# when backprop runs.
+
 gradients = {}
 activations = {}
 
 def save_activation(name):
     def hook(module, input, output):
+        # store the activation and also register a hook on the tensor to grab its gradient
         activations[name] = output.detach()
-    return hook
-
-def save_gradient(name):
-    def hook(module, grad_in, grad_out):
-        gradients[name] = grad_out[0].detach()
+        # ``output`` is a Tensor; ``register_hook`` is called on the autograd node
+        def _grab_grad(grad):
+            gradients[name] = grad.detach()
+        output.register_hook(_grab_grad)
     return hook
 
 # Register hooks on the last conv layer of the backbone
@@ -453,8 +458,8 @@ for name, module in reversed(list(backbone.named_modules())):
 if last_conv is None:
     raise RuntimeError("Could not find last conv layer for Grad-CAM")
 
+# only need the forward hook now
 last_conv.register_forward_hook(save_activation("last_conv"))
-last_conv.register_backward_hook(save_gradient("last_conv"))
 
 probe = LinearProbe(embedding_net, n_classes=len(class_names), sklearn_clf=clf).to(DEVICE)
 probe.eval()
@@ -468,6 +473,13 @@ def grad_cam(img_tensor, target_class=None):
         target_class = int(output.argmax(dim=1).item())
     score = output[0, target_class]
     score.backward(retain_graph=True)
+
+    # make sure the hooks actually fired
+    if "last_conv" not in activations:
+        raise RuntimeError("activation for last conv layer not recorded")
+    if "last_conv" not in gradients:
+        raise RuntimeError("gradient for last conv layer not recorded; check hooks")
+
     act = activations["last_conv"]  # shape [1, C, H, W]
     grad = gradients["last_conv"]   # shape [1, C, H, W]
     weights = grad.mean(dim=(2,3), keepdim=True)  # global avg pool over H,W -> [1,C,1,1]
